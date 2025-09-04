@@ -1,0 +1,495 @@
+---
+title: "608G_mice_multi_tissue_1"
+format: 
+  html:
+    theme: Darkly
+    toc: true
+    toc-expand: 3
+    toc-location: left
+    embed-resources: true
+  pdf: default
+execute:
+  warning: FALSE
+editor: visual
+---
+
+## setup
+
+```{r}
+default_Rlib <- "/varidata/research/projects/laird/jaemin.park/HPC/R_libpath"
+.libPaths(default_Rlib)
+.libPaths()
+set.seed(42)
+
+setwd("/varidata/research/projects/laird/jaemin.park/HPC/608G_progeria_mice")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(magrittr)
+  library(sesame)
+  library(SummarizedExperiment)
+  library(ggplot2)
+})
+```
+
+## raw idats
+
+connect to HPC first, where the data is located. Nathan spix basically already janitored the data NEATLY.
+
+```{r}
+
+path1 <-"/varidata/research/projects/laird/projects/2022_01_10_MouseArray_Manpreet/IDAT"
+
+list1 <- list.files(path1)
+length(list1)/2 # red and green
+
+path2 <- "/varidata/research/projects/laird/primary/projects/2022_02_22_MouseArray_progeria_GGvsWT_Christy/LAIP_20220121_mousemeth/idats"
+
+list2 <- list.files(path2)
+length(list2)/2 # red and green
+
+```
+
+## meta
+
+```{r}
+path3 <- "/varidata/research/projects/laird/primary/projects/2022_02_22_MouseArray_progeria_GGvsWT_Christy/Analysis/Progeria_WT_vs_GG_Mar_2022_NS.xlsx"
+
+ns_meta <- readxl::read_excel(path3)
+write.csv(ns_meta, "ns_meta.csv")
+
+length(ns_meta$Sample_ID) # each unique sampleID
+unique(ns_meta$Sample_Name) # or Mouse ID 
+
+```
+
+### update meta
+
+```{r}
+# 1. fix the age into number. 
+## but fix the typo of 2M first. 
+ns_meta$Age <- sub("2M","2 M", ns_meta$Age)
+ns_meta$Age
+
+ns_meta$Age <- as.numeric(sub(" M", "", ns_meta$Age))
+ns_meta$Age
+
+# 2. add batch info.
+batch_1_samples <- c("CG5596","CF7300","CF9146","CF7520","CF7251")
+
+# first batch is just 5 samples , the rest are all batch 2. (idats2)
+ns_meta$batch <- ifelse(ns_meta$Sample_Name %in% batch_1_samples, 1, 2)
+
+# 3. rename colnames
+ns_meta <- ns_meta %>% 
+  dplyr::rename(mouse_ID = Sample_Name, Sex = Gender)
+
+# 3. fix genotype 
+ns_meta$Genotype <- sub("G/G","GG",ns_meta$Genotype)
+
+# 4. fix spaces
+
+ns_meta$Tissue <- sub("Blood clot","Blood", ns_meta$Tissue)
+
+unique(ns_meta$Tissue)
+
+
+table(ns_meta$Tissue)
+table(ns_meta$Genotype)
+table(ns_meta$Age)
+table(ns_meta$Sex)
+
+write.csv(ns_meta, "updated_ns_meta.csv")
+```
+
+## processing sesame
+
+```{r}
+#idats1 = openSesame(path1)
+#saveRDS(idats1, "2022_01_10_beta.rds")
+#idats1 <- readRDS("2022_01_10_beta.rds")
+#str(idats1)
+
+#idats2 = openSesame(path2)
+#saveRDS(idats2, "2022_02_22_beta.rds")
+idats2 <- readRDS("2022_02_22_beta.rds")
+str(idats2)
+```
+
+### matching the meta info to confirm.
+
+interestingly...all the raw data is here???? I thought they would be dispersed throughout the first and the second... did they already wrangle this dataset?
+
+```{r}
+library(eulerr)
+fit <- euler(list(test = colnames(idats2), tt = ns_meta$Sentrix))
+plot(fit)
+
+vennlist <- list(feb2022idat_files = colnames(idats2), # all the processed files
+     NS_meta = ns_meta$Sentrix) # all the batch2 based on ns meta
+plot(gplots::venn(vennlist))
+
+# are all of them sentrixID and the samples matching?
+setequal(colnames(idats2), ns_meta$Sentrix)
+
+# are they in the same order?
+identical(colnames(idats2), ns_meta$Sentrix)
+
+# Get the indices of the matching elements in idats2
+index <- match(colnames(idats2), ns_meta$Sentrix)
+
+# Use these indices to rearrange ns_meta
+ns_meta <- ns_meta[index, ]
+```
+
+## Summarized Experiment
+
+eitherway, we can get the SE object
+
+```{r}
+KYCG_listDBGroups("MM285")
+
+# more datasets here;
+# https://github.com/zhou-lab/KYCG_knowledgebase_EPICv2
+# KYCG_listDBGroups(path = "~/Downloads/KYCG_knowledgebase_EPICv2")
+
+### get all PMD solos
+pmdsolowcgw <- KYCG_getDBs("MM285.designGroup")[["PMDsoloWCGW"]]
+length(pmdsolowcgw)
+```
+
+```{r}
+progeria_se <- SummarizedExperiment(assays = list(
+  counts = idats2),
+  colData = ns_meta)
+
+progeria_se
+
+# model <- sesameAnno_get("Anno/MM285/Clock_Zhou347.rds")
+# doesn't work. 
+```
+
+```{r}
+
+# plot out the PMDsolo-WCGW
+G608G_beta <- assay(progeria_se)
+ssbeta <-subset(G608G_beta,rownames(G608G_beta)%in%pmdsolowcgw)
+median_val <- apply(ssbeta,2,median, na.rm=T)
+df <- as.data.frame(median_val)
+df <- tibble::rownames_to_column(df, "Epic_code")
+df2 <- as.data.frame(colData(progeria_se)) %>% 
+  tibble::rownames_to_column("Epic_code")
+df.plot <- dplyr::inner_join(df, df2, by = "Epic_code")
+df.plot
+
+ggplot(df.plot, aes(x=Age, y=median_val, color=Genotype, shape=Tissue)) +
+  geom_point() +
+  stat_smooth(method = lm) +
+  theme_minimal() +
+  ylim(0,1)+
+  ggtitle("608G BAC mice multi-tissue Comparison")
+
+# Filtering out 9-month and 6-month-old WT mice
+df.plot2 <- df.plot %>%
+  filter(!(Age %in% c("9", "12")))
+df.plot2 <- df.plot %>%
+  filter(!(Tissue %in% c("Muscle")))
+
+ggplot(df.plot2, aes(x = Age, y = median_val, color = Genotype, shape = Tissue)) +
+  geom_point(size = 3) +
+  stat_smooth(method = "lm", se = FALSE, aes(group = interaction(Tissue, Genotype))) +
+  scale_color_manual(values = c("WT" = "black", "GG" = "red")) +
+  theme_minimal() +
+  ylim(0, 1) +
+  ggtitle("608G BAC mice multi-tissue comparison") +
+  theme(legend.position = "right")
+
+```
+
+## visualization
+
+### Blood at 6mo.
+
+```{r}
+unique(progeria_se$Tissue)
+
+selected_indices <- colData(progeria_se)$Tissue == "Spleen"
+blood_608G <- progeria_se[, selected_indices]
+#selected_indices <- colData(blood_608G)$Age == "6"
+#blood_6mo_608G <- blood_608G[, selected_indices]
+#blood_6mo_608G
+
+colData(blood_608G)$Sex
+# so 2 vs 2 (male and female)
+
+# What does the PMDsoloWCGW looklike 
+G608G_beta <- assay(blood_608G)
+ssbeta <-subset(G608G_beta,rownames(G608G_beta)%in%pmdsolowcgw)
+median_val <- apply(ssbeta,2,median, na.rm=T)
+df <- as.data.frame(median_val)
+df <- tibble::rownames_to_column(df, "Epic_code")
+df2 <- as.data.frame(colData(progeria_se)) %>% 
+  tibble::rownames_to_column("Epic_code")
+df.plot <- dplyr::inner_join(df, df2, by = "Epic_code")
+df.plot
+
+ggplot(df.plot, aes(x=Age, y=median_val, color=Genotype)) +
+  geom_point() +
+  stat_smooth(method = lm) +
+  theme_minimal() +
+  xlim(0,7) +
+  ylim(0.5,0.8)+
+  ggtitle("608G BAC mice multi-tissue Comparison")
+
+library(ggrepel)
+ggplot(df.plot, aes(x = Age, y = median_val, color = Genotype)) +
+  geom_point() +
+  geom_text_repel(aes(label = mouse_ID), 
+                  vjust = -0.5, 
+                  hjust = 0.5,
+                  size = 3) +
+  stat_smooth(method = lm) +
+  theme_minimal() +
+  xlim(1,12) +
+  ylim(0.7, 0.8) +
+  ggtitle("608G BAC mice multi-tissue Comparison")
+
+# why are they climbing upwards...?
+selected_indices <- colData(progeria_se)$Tissue == "Spleen"
+blood_608G <- progeria_se[, selected_indices]
+G608G_beta <- assay(blood_608G)
+compareReference(sesameDataGet("MM285.tissueSignature"), G608G_beta)
+
+selected_indices <- colData(progeria_se)$Tissue == "Blood"
+blood_608G <- progeria_se[, selected_indices]
+G608G_beta <- assay(blood_608G)
+compareReference(sesameDataGet("MM285.tissueSignature"), G608G_beta)
+
+selected_indices <- colData(progeria_se)$Tissue == "Liver"
+blood_608G <- progeria_se[, selected_indices]
+G608G_beta <- assay(blood_608G)
+compareReference(sesameDataGet("MM285.tissueSignature"), G608G_beta)
+```
+
+
+```{r}
+se <- BM608G_blood_6mo
+colData(se)
+
+## check whether there are empty values (NAs) in this se object
+se_ok = checkLevels(assay(se), colData(se)$Genotype)
+
+# how much is left?
+sum(se_ok)
+
+# now filter out the probes. 
+se_filt <- se[se_ok,]
+se_filt
+
+# set reference as WT
+colData(se_filt)$Genotype <- relevel(factor(colData(se_filt)$Genotype), "WT")
+```
+
+### run DML
+
+running DML to get Genotype based differences. 
+
+```{r}
+#dml_run <- se_filt
+#smry = DML(dml_run, ~ Genotype)
+#getwd()
+#saveRDS(smry, "summary.rds")
+smry <- readRDS("summary.rds")
+# technically I could regress out 'sex' but not now. 
+
+test_result = summaryExtractTest(smry)
+str(test_result)
+#test_result$Probe_ID <- names(smry)
+
+### arrange by estimate livePDL
+test_result <- test_result %>% 
+  arrange(desc(Est_GenotypeGG))
+# arrange orders it by low to high, so using tail, we get the highest estimate 
+
+```
+
+### Bone marrow at 6 mo.
+considering the HGPS mice die in 6 months, lets do a simple comparison of BM (mesenchymal stem cells at 6 months)
+
+```{r}
+selected_indices <- colData(progeria_se)$Tissue == "BM"
+BM_608G <- progeria_se[, selected_indices]
+
+selected_indices <- colData(BM_608G)$Age == "6"
+BM_6mo_608G <- BM_608G[, selected_indices]
+BM_6mo_608G
+
+# so 2 vs 2 (male and female)
+```
+
+```{r}
+se <- BM609G_6mo
+colData(se)
+
+## check whether there are empty values (NAs) in the subculture 
+se_ok = checkLevels(assay(se), colData(se)$Genotype)
+
+# how much is left?
+sum(se_ok)
+
+# now filter out the probes. 
+se_filt <- se[se_ok,]
+se_filt
+
+# set reference as WT
+colData(se_filt)$Genotype <- relevel(factor(colData(se_filt)$Genotype), "WT")
+```
+
+### run DML
+
+running DML to get Genotype based differences. 
+
+```{r}
+#dml_run <- se_filt
+#smry = DML(dml_run, ~ Genotype)
+#getwd()
+#saveRDS(smry, "summary.rds")
+smry <- readRDS("summary.rds")
+# technically I could regress out 'sex' but not now. 
+
+test_result = summaryExtractTest(smry)
+str(test_result)
+#test_result$Probe_ID <- names(smry)
+
+### arrange by estimate livePDL
+test_result <- test_result %>% 
+  arrange(desc(Est_GenotypeGG))
+# arrange orders it by low to high, so using tail, we get the highest estimate 
+
+```
+
+### visualize the results.
+
+wouldn't it be interesting if we can find the same 'hyperproliferative phenotype'? 
+
+```{r}
+library(ggrepel)
+sig_res <- test_result %>% filter(Pval_GenotypeGG < 0.01)
+
+# define query
+query <- sig_res$Probe_ID
+
+# define platform
+enrichres <- testEnrichment(query, platform="MM285")
+
+# viz
+kycg1 <- KYCG_plotEnrichAll(enrichres)
+kycg1
+
+test_result %>% dplyr::select(Probe_ID) %>% head
+df = data.frame(Age = colData(dml_run)$Age,
+                Genotype = colData(dml_run)$Genotype,
+    BetaValue = assay(dml_run)[test_result$Probe_ID[nrow(test_result)],])
+
+ggplot2::ggplot(df, aes(Genotype, BetaValue, color=Genotype)) +
+  geom_smooth(method="lm") +
+  geom_boxplot()+
+  theme_minimal() +
+  ylim(0,1)
+
+#### higher probes indicate slope >0 meaning that it 'has higher beta than WT.
+higher <- test_result %>% 
+  dplyr::filter(Est_GenotypeGG > 0, Pval_GenotypeGG < 0.01)
+dim(higher)
+
+lower <- test_result %>% 
+  dplyr::filter(Est_GenotypeGG < 0, Pval_GenotypeGG < 0.01)
+dim(lower)
+
+# viz
+kycg2 <- KYCG_plotEnrichAll(testEnrichment(higher$Probe_ID, platform="MM285"), n_label=50) + ggtitle("6 mo GG higher probes")
+kycg3 <- KYCG_plotEnrichAll(testEnrichment(lower$Probe_ID, platform="MM285"), n_label=50) + ggtitle("6 mo GG lower probes")
+kycg2
+kycg3
+
+```
+
+```{r}
+### lets viz 20 of them. 
+
+# Tail to get the 20 probes with the highest estimate.
+top20_probes <- test_result %>% dplyr::select(Probe_ID, Est_GenotypeGG) %>% tail(20)
+
+# Create a list of dataframes, one for each probe
+dfs <- lapply(top20_probes$Probe_ID, function(probe_id) {
+  data.frame(
+    Probe_ID = probe_id,
+    Est_GenotypeGG = colData(dml_run)$Genotype,
+    BetaValue = assay(dml_run)[probe_id,]
+  )
+})
+
+# Bind all dataframes together
+df_top20 <- bind_rows(dfs)
+
+ggplot(df_top20, aes(x = Est_GenotypeGG, y = BetaValue, color = as.factor(Probe_ID), group = Probe_ID)) +
+  geom_point() +
+  geom_line() +  # Connects the dots with lines for each Probe_ID
+  geom_smooth(method = "loess", se = FALSE) + # Adds LOESS smoothed line to the plot
+  labs(title = "Scatter plot for top 20 probes",  # Changed to top 20 as per the dataframe name
+       x = "Total PDL",
+       y = "Beta Value") +
+  theme_minimal() +
+  scale_color_discrete(name = "Probe ID") +
+  ylim(0,1)
+
+
+last20_probes <- test_result %>% dplyr::select(Probe_ID, Est_GenotypeGG) %>% head(20)
+
+# Create a list of dataframes, one for each probe
+dfs <- lapply(last20_probes$Probe_ID, function(probe_id) {
+  data.frame(
+    Probe_ID = probe_id,
+    Est_GenotypeGG = colData(dml_run)$Genotype,
+    BetaValue = assay(dml_run)[probe_id,]
+  )
+})
+
+# Bind all dataframes together
+df_bottom20 <- bind_rows(dfs)
+
+ggplot(df_bottom20, aes(x = Est_GenotypeGG, y = BetaValue, color = as.factor(Probe_ID), group = Probe_ID)) +
+  geom_point() +
+  geom_line() +  # Connects the dots with lines for each Probe_ID
+  geom_smooth(method = "loess", se = FALSE) + # Adds LOESS smoothed line to the plot
+  labs(title = "Scatter plot for top 20 probes",  # Changed to top 20 as per the dataframe name
+       x = "Total PDL",
+       y = "Beta Value") +
+  theme_minimal() +
+  scale_color_discrete(name = "Probe ID") +
+  ylim(0,1)
+
+df_extreme <- bind_rows(df_top20, df_bottom20)
+
+ggplot(df_extreme, aes(x = Est_GenotypeGG, y = BetaValue, color = as.factor(Probe_ID), group = Probe_ID)) +
+  geom_point() +
+  geom_line() +  # Connects the dots with lines for each Probe_ID
+  geom_smooth(method = "loess", se = FALSE) + # Adds LOESS smoothed line to the plot
+  labs(title = "Scatter plot for top 20 probes",  # Changed to top 20 as per the dataframe name
+       x = "Total PDL",
+       y = "Beta Value") +
+  theme_minimal() +
+  scale_color_discrete(name = "Probe ID") +
+  ylim(0,1)+
+  theme(legend.position = "none")
+```
+
+### save
+
+```{r}
+pdf("kycg.pdf")
+kycg2
+kycg3
+dev.off()
+```
+
+### sessionInfo()

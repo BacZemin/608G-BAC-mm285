@@ -1,0 +1,241 @@
+---
+title: "608G_mice_multi_tissue_1"
+format: 
+  html:
+    theme: Darkly
+    toc: true
+    toc-expand: 3
+    toc-location: left
+    embed-resources: true
+  pdf: default
+execute:
+  warning: FALSE
+editor: visual
+---
+
+## setup
+
+```{r}
+set.seed(42)
+rm(list=ls())
+setwd("/varidata/research/projects/laird/jaemin.park/HPC/608G_progeria_mice")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(magrittr)
+  library(sesame)
+  library(SummarizedExperiment)
+})
+```
+
+## raw idats
+
+connect to HPC first, where the data is located. Nathan spix basically already janitored the data NEATLY.
+
+```{r}
+
+path1 <-"/varidata/research/projects/laird/projects/2022_01_10_MouseArray_Manpreet/IDAT"
+
+list1 <- list.files(path1)
+length(list1)/2 # red and green
+
+path2 <- "/varidata/research/projects/laird/primary/projects/2022_02_22_MouseArray_progeria_GGvsWT_Christy/LAIP_20220121_mousemeth/idats"
+
+list2 <- list.files(path2)
+length(list2)/2 # red and green
+
+```
+
+## meta
+
+```{r}
+path3 <- "/varidata/research/projects/laird/primary/projects/2022_02_22_MouseArray_progeria_GGvsWT_Christy/Analysis/Progeria_WT_vs_GG_Mar_2022_NS.xlsx"
+
+ns_meta <- readxl::read_excel(path3)
+write.csv(ns_meta, "ns_meta.csv")
+
+length(ns_meta$Sample_ID) # each unique sampleID
+unique(ns_meta$Sample_Name) # or Mouse ID 
+
+```
+
+### update meta
+
+```{r}
+# 1. fix the age into number. 
+## but fix the typo of 2M first. 
+ns_meta$Age <- sub("2M","2 M", ns_meta$Age)
+ns_meta$Age
+
+ns_meta$Age <- as.numeric(sub(" M", "", ns_meta$Age))
+ns_meta$Age
+
+# 2. add batch info.
+batch_1_samples <- c("CG5596","CF7300","CF9146","CF7520","CF7251")
+
+# first batch is just 5 samples , the rest are all batch 2. (idats2)
+ns_meta$batch <- ifelse(ns_meta$Sample_Name %in% batch_1_samples, 1, 2)
+
+# 3. rename colnames
+ns_meta <- ns_meta %>% 
+  dplyr::rename(mouse_ID = Sample_Name, Sex = Gender)
+
+# 3. fix genotype 
+ns_meta$Genotype <- sub("G/G","GG",ns_meta$Genotype)
+
+# 4. fix spaces
+
+ns_meta$Tissue <- sub("Blood clot","Blood", ns_meta$Tissue)
+
+unique(ns_meta$Tissue)
+
+
+table(ns_meta$Tissue)
+table(ns_meta$Genotype)
+table(ns_meta$Age)
+table(ns_meta$Sex)
+
+write.csv(ns_meta, "updated_ns_meta.csv")
+```
+
+## processing sesame
+
+```{r}
+#idats1 = openSesame(path1)
+#saveRDS(idats1, "2022_01_10_beta.rds")
+#idats1 <- readRDS("2022_01_10_beta.rds")
+#str(idats1)
+
+#idats2 = openSesame(path2)
+#saveRDS(idats2, "2022_02_22_beta.rds")
+idats2 <- readRDS("2022_02_22_beta.rds")
+str(idats2)
+```
+
+### matching the meta info to confirm.
+
+interestingly...all the raw data is here???? I thought they would be dispersed throughout the first and the second... did they already wrangle this dataset?
+
+```{r}
+library(eulerr)
+fit <- euler(list(test = colnames(idats2), tt = ns_meta$Sentrix))
+plot(fit)
+
+vennlist <- list(feb2022idat_files = colnames(idats2), # all the processed files
+     NS_meta = ns_meta$Sentrix) # all the batch2 based on ns meta
+plot(gplots::venn(vennlist))
+
+# are all of them sentrixID and the samples matching?
+setequal(colnames(idats2), ns_meta$Sentrix)
+
+# are they in the same order?
+identical(colnames(idats2), ns_meta$Sentrix)
+
+# Get the indices of the matching elements in idats2
+index <- match(colnames(idats2), ns_meta$Sentrix)
+
+# Use these indices to rearrange ns_meta
+ns_meta <- ns_meta[index, ]
+```
+
+## Summarized Experiment
+
+eitherway, we can get the SE object
+
+```{r}
+progeria_se <- SummarizedExperiment(assays = list(
+  counts = idats2),
+  colData = ns_meta)
+
+```
+
+## MEF
+
+```{r}
+#link <- "/varidata/research/projects/laird/projects/2023_01_13_MouseArray_Paula_MEF_progeria_line"
+#idats3 = openSesame(link)
+#saveRDS(idats3, "2023_01_13_beta.rds")
+idats3 <- readRDS("2023_01_13_beta.rds")
+
+#link <- "/varidata/research/projects/laird/projects/2023_02_03_MouseArray_Progeria_MEFs_Paula/IDAT"
+#idats4 = openSesame(link)
+#saveRDS(idats4, "2023_02_03_beta.rds")
+idats4 <- readRDS("2023_02_03_beta.rds")
+
+dim(idats3)
+dim(idats4)
+
+
+```
+
+### meta data
+
+meta combined from /varidata/research/projects/laird/projects/2023_01_13_MouseArray_Paula_MEF_progeria_line and /varidata/research/projects/laird/projects/2023_02_03_MouseArray_Progeria_MEFs_Paula
+
+and Paula's dropbox
+
+```{r}
+
+jp_meta <- readxl::read_excel("jp_meta.xlsx")
+jp_meta$Sentrix <- paste(jp_meta$Sentrix_ID, jp_meta$Sentrix_Position, sep = "_")
+
+jp_meta$Sentrix_ID <- NULL
+jp_meta$Sentrix_Position <- NULL
+
+# Assuming df is your data frame and column_name is the column containing the text
+jp_meta$mouse_ID <- gsub(" ", "_", jp_meta$mouse_ID)
+
+## shift position 
+cols <- ncol(jp_meta) # because sentrix is last column
+jp_meta <- jp_meta[, c(1:2, cols, 3:(cols-1))]
+
+head(jp_meta)
+
+
+```
+
+checkup
+
+```{r}
+## combine the columns
+MEF_mtx <- cbind(idats3,idats4)
+
+# whatever is not annotated, we don't need it. 
+MEF_mtx <- MEF_mtx[, colnames(MEF_mtx) %in% jp_meta$Sentrix]
+
+# are all of them sentrixID and the samples matching?
+setequal(colnames(MEF_mtx), jp_meta$Sentrix)
+
+# are they in the same order?
+identical(colnames(MEF_mtx), jp_meta$Sentrix)
+
+# Get the indices of the matching elements in idats2
+index <- match(colnames(MEF_mtx), jp_meta$Sentrix)
+
+# Use these indices to rearrange jp_meta
+jp_meta <- jp_meta[index, ]
+
+
+write.csv(jp_meta, "updated_jp_meta.csv")
+```
+
+## SE
+
+```{r}
+progeria_MEF_se <- SummarizedExperiment(assays = list(
+  counts = MEF_mtx),
+  colData = jp_meta)
+
+```
+
+### save output
+
+```{r}
+saveRDS(progeria_se, "progeria_se.rds")
+saveRDS(progeria_MEF_se, "progeria_MEF_se.rds")
+```
+
+### session info
+
+```{r}
+sessionInfo()
+```
